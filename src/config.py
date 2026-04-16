@@ -28,7 +28,7 @@ P_MAX_W     = 10 ** (P_MAX_DBM / 10) / 1000.0   # ~1 W
 
 # ── Critical User (CU) ────────────────────────────────────────────────────────
 P_CU_DBM    = 30.0            # CU Tx power dBm (1 W — military/ATC radar transmitter)
-P_CU_W      = 10 ** (P_CU_DBM / 10) / 1000.0   # 1 W
+P_CU_W      = 10 ** (P_CU_DBM / 10) / 1000.0   # ~1 W
 
 # semi-Markov CU activity: π_1 = λ_on / (λ_on + λ_off) = 0.30
 CU_LAMBDA_ON  = 0.10          # transition rate idle→active

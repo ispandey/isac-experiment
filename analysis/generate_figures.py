@@ -555,7 +555,7 @@ def table_i_parameters(out_dir: Path) -> None:
         ("Slot duration τ",                "10 ms"),
         ("Number of NCUs K",               "10, 20, 30"),
         ("ISAC BS antennas N_t",           "64 (ULA)"),
-        ("CU Tx power P_c",                "20 dBm"),
+        ("CU Tx power P_c",                "30 dBm (~1 W, military/ATC radar transmitter)"),
         ("Max NCU Tx power",               "23 dBm"),
         ("Noise figure",                   "7 dB"),
         ("CU on-time π₁",                  "0.30 (30% duty cycle)"),
