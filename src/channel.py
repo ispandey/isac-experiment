@@ -251,7 +251,7 @@ class ISACRadarModel:
           SNR_r = P_r * σ_RCS² * G_t * G_r * λ² / ((4π)³ * d⁴ * k_B * T_s * B_r)
         """
         P_r = cfg.P_MAX_W / 2.0
-        numerator = (P_r * cfg.SIGMA_RCS ** 2 * cfg.G_TX * cfg.G_RX
+        numerator = (P_r * cfg.SIGMA_RCS * cfg.G_TX * cfg.G_RX
                      * cfg.WAVELENGTH ** 2)
         denominator = ((4 * np.pi) ** 3 * cfg.BS_TO_CU_DIST_M ** 4
                        * cfg.BOLTZMANN_K * cfg.TEMPERATURE * cfg.BW_HZ)

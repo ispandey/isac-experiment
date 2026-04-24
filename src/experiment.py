@@ -23,6 +23,12 @@ from typing import Optional
 import numpy as np
 from numpy.random import Generator
 
+try:
+    from tqdm.auto import tqdm as _tqdm
+    _HAS_TQDM = True
+except ImportError:
+    _HAS_TQDM = False
+
 import src.config as cfg
 from src.adversary import AdversaryModel, AdversaryType
 from src.channel import ChannelModel, CUActivityModel
@@ -354,9 +360,20 @@ class VeridicDSA:
         episode_length: int = cfg.EPISODE_LENGTH,
         verbose: bool = False,
         log_every: int = 500,
+        checkpoint_path: str | None = None,
+        checkpoint_every: int = 1000,
     ) -> tuple[dict, list]:
         """
         Full training run over N episodes.
+
+        Parameters
+        ----------
+        n_episodes       : total number of training episodes
+        episode_length   : slots per episode
+        verbose          : print progress to stdout
+        log_every        : print interval (episodes)
+        checkpoint_path  : if set, save PPO agent checkpoint here periodically
+        checkpoint_every : checkpoint save interval (episodes)
 
         Returns
         -------
@@ -364,7 +381,12 @@ class VeridicDSA:
         episode_revenues : list of per-episode total revenues
         """
         episode_revenues = []
-        for ep in range(n_episodes):
+
+        ep_iter = range(n_episodes)
+        if _HAS_TQDM and verbose:
+            ep_iter = _tqdm(ep_iter, desc="VERIDIC-DSA Training", unit="ep", dynamic_ncols=True)
+
+        for ep in ep_iter:
             ep_start_records = len(self.metrics.records)
             for _ in range(episode_length):
                 self.run_slot(self._slot_count)
@@ -372,12 +394,19 @@ class VeridicDSA:
             ep_rev = sum(r.revenue for r in ep_records)
             episode_revenues.append(ep_rev)
 
-            if verbose and (ep + 1) % log_every == 0:
+            if checkpoint_path and (ep + 1) % checkpoint_every == 0:
+                self.ppo_agent.save_checkpoint(checkpoint_path)
+
+            if verbose and not _HAS_TQDM and (ep + 1) % log_every == 0:
                 ep_daf = MetricStore(records=list(ep_records)).daf()
                 ep_hip = MetricStore(records=list(ep_records)).hip()
                 print(
                     f"Ep {ep+1}/{n_episodes} | Rev={ep_rev:.2f} "
                     f"| DAF={ep_daf:.3f} | HIP={ep_hip:.4f}"
                 )
+            elif verbose and _HAS_TQDM and (ep + 1) % log_every == 0:
+                ep_daf = MetricStore(records=list(ep_records)).daf()
+                ep_hip = MetricStore(records=list(ep_records)).hip()
+                ep_iter.set_postfix(rev=f"{ep_rev:.1f}", DAF=f"{ep_daf:.3f}", HIP=f"{ep_hip:.4f}")
 
         return self.metrics.summary(), episode_revenues

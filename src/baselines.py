@@ -89,8 +89,8 @@ class BaselineSystem:
         bl = self.baseline
 
         if bl == BaselineType.BL1:
-            # Majority vote: access if majority report idle
-            return int(np.mean(d_hat) >= 0.5)
+            # Majority vote: access if majority report idle (d_hat == 0)
+            return int(np.mean(d_hat) < 0.5)
 
         elif bl == BaselineType.BL2:
             # OR-rule: access if ANY NCU reports idle
