@@ -60,7 +60,7 @@ where:
 
 **Thermal noise power:**
 
-$$\sigma_k^2 = k_B \cdot T \cdot B \cdot \text{NF} = 1.38\times10^{-23} \cdot 290 \cdot 10^8 \cdot 5.01 \approx 2.01\times10^{-12}\,\text{W}$$
+$$\sigma_k^2 = k_B \cdot T \cdot B \cdot \text{NF} = 1.38\times10^{-23} \cdot 290 \cdot 10^8 \cdot 5.01 \approx 2.00\times10^{-12}\,\text{W}$$
 
 where NF $= 7\,\text{dB}$ (linear: 5.01).
 

@@ -397,16 +397,15 @@ class VeridicDSA:
             if checkpoint_path and (ep + 1) % checkpoint_every == 0:
                 self.ppo_agent.save_checkpoint(checkpoint_path)
 
-            if verbose and not _HAS_TQDM and (ep + 1) % log_every == 0:
+            if verbose and (ep + 1) % log_every == 0:
                 ep_daf = MetricStore(records=list(ep_records)).daf()
                 ep_hip = MetricStore(records=list(ep_records)).hip()
-                print(
-                    f"Ep {ep+1}/{n_episodes} | Rev={ep_rev:.2f} "
-                    f"| DAF={ep_daf:.3f} | HIP={ep_hip:.4f}"
-                )
-            elif verbose and _HAS_TQDM and (ep + 1) % log_every == 0:
-                ep_daf = MetricStore(records=list(ep_records)).daf()
-                ep_hip = MetricStore(records=list(ep_records)).hip()
-                ep_iter.set_postfix(rev=f"{ep_rev:.1f}", DAF=f"{ep_daf:.3f}", HIP=f"{ep_hip:.4f}")
+                if _HAS_TQDM:
+                    ep_iter.set_postfix(rev=f"{ep_rev:.1f}", DAF=f"{ep_daf:.3f}", HIP=f"{ep_hip:.4f}")
+                else:
+                    print(
+                        f"Ep {ep+1}/{n_episodes} | Rev={ep_rev:.2f} "
+                        f"| DAF={ep_daf:.3f} | HIP={ep_hip:.4f}"
+                    )
 
         return self.metrics.summary(), episode_revenues
