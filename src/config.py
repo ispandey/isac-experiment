@@ -42,7 +42,8 @@ NOISE_FIGURE_DB = 7.0         # Noise figure (dB)
 NOISE_FIGURE    = 10 ** (NOISE_FIGURE_DB / 10)
 
 # Thermal noise power at receiver: N_0 = k_B * T * B * NF
-NOISE_POWER_W = BOLTZMANN_K * TEMPERATURE * BW_HZ * NOISE_FIGURE   # ~3.96e-13 W
+# kTB = 4.00e-13 W; ×NF(7 dB = 5.01) → ~2.00e-12 W
+NOISE_POWER_W = BOLTZMANN_K * TEMPERATURE * BW_HZ * NOISE_FIGURE   # ~2.00e-12 W
 
 # ── Energy detection ──────────────────────────────────────────────────────────
 ALPHA_MAX = 0.05              # max false alarm rate (5%)

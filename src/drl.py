@@ -9,6 +9,7 @@ Implements:
   • Algorithm 2: PPO Update
   • Non-stationarity handling via sliding window replay (Sec. 7.4)
   • DRL state construction (Sec. 7.1)
+  • GPU / mixed-precision (AMP) support for Google Colab
 """
 from __future__ import annotations
 
@@ -21,6 +22,18 @@ import torch.optim as optim
 from torch.distributions import Categorical
 
 import src.config as cfg
+
+# ── Device selection (GPU if available, used by Colab) ───────────────────────
+
+def get_device() -> torch.device:
+    """Return the best available device (CUDA > MPS > CPU)."""
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        return torch.device("mps")
+    return torch.device("cpu")
+
+DEVICE = get_device()
 
 
 # ── Network architectures ─────────────────────────────────────────────────────
@@ -132,16 +145,21 @@ class PPOAgent:
         self.price_grid = np.linspace(cfg.Q_MIN, cfg.Q_MAX, self.n_price_levels)
 
         state_dim = cfg.STATE_DIM
+        self.device = DEVICE
 
-        self.actor  = Actor(state_dim, K, self.n_price_levels)
-        self.critic = Critic(state_dim)
+        self.actor  = Actor(state_dim, K, self.n_price_levels).to(self.device)
+        self.critic = Critic(state_dim).to(self.device)
 
-        self.actor_old = Actor(state_dim, K, self.n_price_levels)
+        self.actor_old = Actor(state_dim, K, self.n_price_levels).to(self.device)
         self.actor_old.load_state_dict(self.actor.state_dict())
         self.actor_old.eval()
 
         self.opt_actor  = optim.Adam(self.actor.parameters(),  lr=cfg.DRL_LR_ACTOR)
         self.opt_critic = optim.Adam(self.critic.parameters(), lr=cfg.DRL_LR_CRITIC)
+
+        # Automatic Mixed Precision scaler (no-op on CPU)
+        self._use_amp = self.device.type == "cuda"
+        self._scaler  = torch.amp.GradScaler("cuda") if self._use_amp else None
 
         # Sliding window replay buffer (non-stationarity handling, Sec. 7.4)
         self.buffer: deque = deque(maxlen=cfg.REPLAY_WINDOW)
@@ -228,12 +246,12 @@ class PPOAgent:
         """
         self._update_state_stats(s)
         s_norm = self.normalise_state(s)
-        s_t = torch.FloatTensor(s_norm).unsqueeze(0)
+        s_t = torch.FloatTensor(s_norm).unsqueeze(0).to(self.device)
 
         action_idx, _ = self.actor.sample_action(s_t)
         value          = self.critic(s_t).item()
 
-        action_np  = action_idx.numpy().astype(int)
+        action_np  = action_idx.cpu().numpy().astype(int)
         q_prices   = self.price_grid[action_np]  # (K,)
         return q_prices, action_np, value
 
@@ -262,11 +280,11 @@ class PPOAgent:
 
         # Unpack buffer
         states, actions, rewards, next_states, dones = zip(*self.buffer)
-        S  = torch.FloatTensor(np.stack(states))
-        A  = torch.LongTensor(np.stack(actions))    # (T, K)
-        R  = torch.FloatTensor(rewards)
-        NS = torch.FloatTensor(np.stack(next_states))
-        D  = torch.FloatTensor(dones)
+        S  = torch.FloatTensor(np.stack(states)).to(self.device)
+        A  = torch.LongTensor(np.stack(actions)).to(self.device)    # (T, K)
+        R  = torch.FloatTensor(rewards).to(self.device)
+        NS = torch.FloatTensor(np.stack(next_states)).to(self.device)
+        D  = torch.FloatTensor(dones).to(self.device)
 
         T = len(R)
 
@@ -278,7 +296,7 @@ class PPOAgent:
         gamma   = cfg.DRL_GAMMA
         lam     = cfg.DRL_GAE_LAMBDA
 
-        advantages = torch.zeros(T)
+        advantages = torch.zeros(T, device=self.device)
         last_gae   = 0.0
         for t in reversed(range(T)):
             mask   = 1.0 - D[t]
@@ -301,38 +319,44 @@ class PPOAgent:
 
         for _ in range(cfg.DRL_K_EPOCHS):
             # Shuffle mini-batches
-            idx = torch.randperm(T)
+            idx = torch.randperm(T, device=self.device)
             bs  = cfg.DRL_BATCH_SIZE
             for start in range(0, T, bs):
                 batch = idx[start: start + bs]
                 if len(batch) < 2:
                     continue
 
-                # Step 4: Ratio
-                new_lp = self.actor.log_prob(S[batch], A[batch]).sum(-1)
-                ratio  = torch.exp(new_lp - old_lp[batch].detach())
+                amp_ctx = (
+                    torch.amp.autocast("cuda")
+                    if self._use_amp
+                    else torch.amp.autocast("cpu", enabled=False)
+                )
+                with amp_ctx:
+                    # Step 4: Ratio
+                    new_lp = self.actor.log_prob(S[batch], A[batch]).sum(-1)
+                    ratio  = torch.exp(new_lp - old_lp[batch].detach())
 
-                # Step 5: CLIP objective
-                adv_b = advantages[batch]
-                l_clip = torch.min(
-                    ratio * adv_b,
-                    torch.clamp(ratio, 1 - clip_eps, 1 + clip_eps) * adv_b,
-                ).mean()
+                    # Step 5: CLIP objective
+                    adv_b = advantages[batch]
+                    l_clip = torch.min(
+                        ratio * adv_b,
+                        torch.clamp(ratio, 1 - clip_eps, 1 + clip_eps) * adv_b,
+                    ).mean()
 
-                # Step 6: Value function loss
-                v_pred = self.critic(S[batch]).squeeze(-1)
-                l_vf   = ((v_pred - returns[batch].detach()) ** 2).mean()
+                    # Step 6: Value function loss
+                    v_pred = self.critic(S[batch]).squeeze(-1)
+                    l_vf   = ((v_pred - returns[batch].detach()) ** 2).mean()
 
-                # Step 7: Entropy bonus
-                logits = self.actor(S[batch])  # (batch, K, Q)
-                l_ent  = 0.0
-                for k in range(self.K):
-                    dist  = Categorical(logits=logits[:, k, :])
-                    l_ent = l_ent + dist.entropy().mean()
-                l_ent = l_ent / self.K
+                    # Step 7: Entropy bonus
+                    logits = self.actor(S[batch])  # (batch, K, Q)
+                    l_ent  = 0.0
+                    for k in range(self.K):
+                        dist  = Categorical(logits=logits[:, k, :])
+                        l_ent = l_ent + dist.entropy().mean()
+                    l_ent = l_ent / self.K
 
-                # Step 8: Total loss
-                l_total = -l_clip + cfg.DRL_VF_C1 * l_vf - cfg.DRL_ENTROPY_C2 * l_ent
+                    # Step 8: Total loss
+                    l_total = -l_clip + cfg.DRL_VF_C1 * l_vf - cfg.DRL_ENTROPY_C2 * l_ent
 
                 # KL check (Step 11)
                 with torch.no_grad():
@@ -341,14 +365,24 @@ class PPOAgent:
                 if abs(kl) > cfg.DRL_KL_MAX:
                     break  # early stopping
 
-                # Step 9–10: Gradient step
+                # Step 9–10: Gradient step (AMP-aware)
                 self.opt_actor.zero_grad()
                 self.opt_critic.zero_grad()
-                l_total.backward()
-                nn.utils.clip_grad_norm_(self.actor.parameters(),  0.5)
-                nn.utils.clip_grad_norm_(self.critic.parameters(), 0.5)
-                self.opt_actor.step()
-                self.opt_critic.step()
+                if self._use_amp and self._scaler is not None:
+                    self._scaler.scale(l_total).backward()
+                    self._scaler.unscale_(self.opt_actor)
+                    self._scaler.unscale_(self.opt_critic)
+                    nn.utils.clip_grad_norm_(self.actor.parameters(),  0.5)
+                    nn.utils.clip_grad_norm_(self.critic.parameters(), 0.5)
+                    self._scaler.step(self.opt_actor)
+                    self._scaler.step(self.opt_critic)
+                    self._scaler.update()
+                else:
+                    l_total.backward()
+                    nn.utils.clip_grad_norm_(self.actor.parameters(),  0.5)
+                    nn.utils.clip_grad_norm_(self.critic.parameters(), 0.5)
+                    self.opt_actor.step()
+                    self.opt_critic.step()
 
                 stats["l_clip"] += l_clip.item()
                 stats["l_vf"]   += l_vf.item()
@@ -363,3 +397,30 @@ class PPOAgent:
         # Copy updated actor to old
         self.actor_old.load_state_dict(self.actor.state_dict())
         return stats
+
+    # ── Checkpoint helpers (for Colab session persistence) ────────────────────
+
+    def save_checkpoint(self, path: str) -> None:
+        """Save agent state to disk (for Colab Drive persistence)."""
+        torch.save({
+            "actor":        self.actor.state_dict(),
+            "actor_old":    self.actor_old.state_dict(),
+            "critic":       self.critic.state_dict(),
+            "opt_actor":    self.opt_actor.state_dict(),
+            "opt_critic":   self.opt_critic.state_dict(),
+            "state_mean":   self._state_mean,
+            "state_std":    self._state_std,
+            "n_updates":    self._n_updates,
+        }, path)
+
+    def load_checkpoint(self, path: str) -> None:
+        """Load agent state from disk."""
+        ckpt = torch.load(path, map_location=self.device, weights_only=False)
+        self.actor.load_state_dict(ckpt["actor"])
+        self.actor_old.load_state_dict(ckpt["actor_old"])
+        self.critic.load_state_dict(ckpt["critic"])
+        self.opt_actor.load_state_dict(ckpt["opt_actor"])
+        self.opt_critic.load_state_dict(ckpt["opt_critic"])
+        self._state_mean = ckpt["state_mean"]
+        self._state_std  = ckpt["state_std"]
+        self._n_updates  = ckpt["n_updates"]
